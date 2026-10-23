@@ -375,3 +375,20 @@ def test_without_ps_a_fresh_record_is_running_and_a_stale_one_is_interrupted(env
         assert status_json(no_ps)["state"] == "interrupted"
     finally:
         kill_workers(fake)
+
+
+def test_a_done_file_carries_what_the_worker_says_it_dropped(env, vault, fake):
+    fake.scenario({"result_text": "3절의 표가 깨져 옮기지 못하고 버렸다"})
+    _, out = run_json(env, str(vault / "a.md"))
+    f = by_source(out)["a.md"]
+    assert f["status"] == "done" and f["worker_said"] == "3절의 표가 깨져 옮기지 못하고 버렸다"
+    assert "버린 대목" in fake.calls()[0]["prompt"]
+
+
+def test_retry_advice_after_a_force_run_does_not_promise_to_skip_finished_files(env, vault, fake):
+    fake.scenario({}, **{"b.md": {"exit": 3}})
+    _, out = run_json(env, str(vault), "--force")
+    assert "건너뛰" not in out["next"] and "원문만" in out["next"]
+    assert "건너뛰" not in by_source(out)["b.md"]["next"]
+    _, out = run_json(env, str(vault / "b.md"))
+    assert "건너뛰" in out["next"]

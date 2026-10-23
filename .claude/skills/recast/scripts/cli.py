@@ -29,6 +29,7 @@ RUN_HELP = """원문을 재구조화한다. 파일 수에 비례해 오래 걸�
   {"run": 실행 id, "state": finished|interrupted,
    "summary": {total, done, failed, skipped, interrupted, seconds},
    "files": [{source, status: done|failed|skipped|interrupted, output, source_chars, output_chars, seconds, models, reason, next, worker_said}],
+   — worker_said는 워커의 마지막 답이다(500자까지): 실패면 쓰지 않은 이유, 성공이면 원문이 깨져 버린 대목 또는 '버린 대목 없음'.
    "next": 다음 행동}
 원문·출력 본문은 stdout·stderr·실행 기록에 싣지 않는다. 도는 동안의 진행은 status <실행 id>로 본다.
 

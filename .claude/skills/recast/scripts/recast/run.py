@@ -18,7 +18,7 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 valid_model = claude.valid_model
 SAVE_EVERY = 2.0  # 진행 이벤트로 실행 기록을 다시 쓰는 최소 간격(초)
 
-RETRY = "같은 명령을 다시 실행하면 끝난 파일은 건너뛰고 이 파일만 다시 한다"
+RETRY = "이 원문만 경로로 주고 다시 실행한다"
 NEXT = {
     "stalled": RETRY,
     "crashed": RETRY,
@@ -52,7 +52,8 @@ def prompt(name: str, lines: int, instructions: str | None) -> str:
     text = (f"원래 파일 이름: {name}\n\n"
             f"원문은 이 폴더의 source.md다({lines}줄). 처음부터 끝까지 읽는다 — Read 결과가 중간에서 끊기면 offset으로 이어 읽어 {lines}번째 줄까지 읽는다.\n"
             "다 읽었으면 재구조화한 글 전체를 output.md에 한 번의 Write로 쓴다.\n"
-            "원문에서 재구조화할 지식을 찾을 수 없으면 output.md를 쓰지 않고 그 이유를 답한다.")
+            "원문에서 재구조화할 지식을 찾을 수 없으면 output.md를 쓰지 않고 그 이유를 답한다.\n"
+            "썼으면 마지막 답은 한 줄이다: 원문이 깨져 옮기지 못하고 버린 대목이 있으면 어디를 왜 버렸는지, 없으면 '버린 대목 없음'.")
     if instructions:
         text += f"\n\n사용자 지시(이 원문에 적용한다): {instructions}"
     return text
@@ -226,7 +227,7 @@ class _Batch:
                 return self.finish(i, "skipped", reason=f"처리 도중 다른 실행이 먼저 {target.output.name}을 썼다(덮지 않았다)", **seen)
             except publish.PublishError as e:
                 return self.finish(i, "failed", reason=f"게시하지 못했다: {e}", next=NEXT["publish"], **seen)
-            return self.finish(i, "done", output_chars=len(data.decode("utf-8", errors="replace")), **seen)
+            return self.finish(i, "done", output_chars=len(data.decode("utf-8", errors="replace")), worker_said=out.final_text, **seen)
         except Exception as e:  # 한 파일의 버그가 배치 전체를 멈추지 않게 한다
             return self.finish(i, "failed", reason=f"내부 오류: {type(e).__name__}: {e}"[:500], next=NEXT["internal"])
         finally:
@@ -242,10 +243,13 @@ class _Batch:
             state = self.record["state"]
             seconds = round(self.record["finished_at"] - self.record["started_at"], 1)
             listed = [{k: f[k] for k in keys if k in f and not (k == "output" and f["status"] != "done")} for f in files]
+        # --force로 돈 실행을 그대로 다시 돌리면 끝낸 출력까지 다시 덮는다
+        again = ("--force로 돌았으므로 실패하거나 중단된 원문만 경로로 주고 다시 실행한다" if self.options.force
+                 else "같은 명령을 다시 실행하면 끝난 파일은 건너뛰고 나머지만 한다")
         if state == "interrupted":
-            next_step = "같은 명령을 다시 실행하면 끝난 파일은 건너뛰고 나머지를 한다"
+            next_step = again
         elif counts["failed"]:
-            next_step = "실패한 파일은 reason과 next를 본다 — 같은 명령을 다시 실행하면 끝난 파일은 건너뛰고 실패한 파일만 다시 한다"
+            next_step = "실패한 파일은 reason과 next를 본다 — " + again
         else:
             next_step = "끝났다 — 출력은 각 원문 옆의 Recast_ 파일이다"
         result = {"run": self.id, "state": state, "summary": {"total": len(files), **counts, "seconds": seconds},

@@ -4,7 +4,7 @@ import time
 
 from . import runs
 
-GONE = "실행 프로세스가 끝 기록 없이 사라졌다(강제 종료·재부팅 등) — 같은 명령을 다시 실행하면 끝난 파일은 건너뛴다"
+GONE = "실행 프로세스가 끝 기록 없이 사라졌다(강제 종료·재부팅 등)"
 
 
 class NotFound(Exception):

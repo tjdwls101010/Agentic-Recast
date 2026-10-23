@@ -9,6 +9,7 @@ import argparse
 import json
 import signal
 import sys
+import threading
 
 from recast import run, sources, status
 
@@ -80,10 +81,6 @@ def parser() -> argparse.ArgumentParser:
     return ap
 
 
-def _interrupt(signum, frame):
-    raise KeyboardInterrupt
-
-
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if args.command == "status":
@@ -94,18 +91,18 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         return 0
 
-    signal.signal(signal.SIGTERM, _interrupt)  # 백그라운드 실행을 멈추는 신호도 Ctrl+C처럼 다룬다
+    stop = threading.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM):  # 예외를 던지지 않고 멈춤만 요청한다 — run이 어느 순간에 받아도 같은 길로 끝낸다
+        signal.signal(sig, lambda signum, frame: stop.set())
     options = run.Options(instructions=args.instructions, force=args.force, jobs=args.jobs, model=args.model, effort=args.effort)
     try:
-        result = run.execute(args.paths, options, on_line=lambda line: print(line, file=sys.stderr, flush=True))
+        result = run.execute(args.paths, options, on_line=lambda line: print(line, file=sys.stderr, flush=True), stop=stop)
     except sources.UsageError as e:
         print(f"cli.py run: {e}", file=sys.stderr)
         return 2
     except run.SetupError as e:
         print(f"cli.py run: {e}", file=sys.stderr)
         return 3
-    except KeyboardInterrupt:
-        return 130
     print(json.dumps(result, ensure_ascii=False, indent=1))
     if result["state"] == "interrupted":
         return 130

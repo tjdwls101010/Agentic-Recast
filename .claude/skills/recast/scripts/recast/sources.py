@@ -49,11 +49,13 @@ def _expand(raw: str) -> list[Path]:
 
 def targets(paths: list[str], force: bool) -> list[Target]:
     """경로들을 원문 목록으로 푼다. 같은 원문은 처음 나온 자리에서 한 번만. 잘못된 경로가 하나라도 있으면 UsageError."""
-    seen: dict[Path, None] = {}
+    seen: dict[tuple[int, int], Path] = {}  # (장치, inode) → 처음 준 경로. 심볼릭 링크로 같은 파일을 다시 줘도 한 번만
     for raw in paths:
-        seen.update(dict.fromkeys(_expand(raw)))
+        for p in _expand(raw):
+            st = p.stat()
+            seen.setdefault((st.st_dev, st.st_ino), p)
     result = []
-    for source in seen:
+    for source in seen.values():
         output = output_path(source)
         skip = None if force or not output.exists() else f"이미 있다: {output.name} (다시 쓰려면 --force)"
         result.append(Target(source, output, skip))

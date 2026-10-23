@@ -53,3 +53,10 @@ def test_usage_errors_say_what_is_wrong(vault, make, needle):
     (vault / "sub" / "empty").mkdir()
     with pytest.raises(sources.UsageError, match=needle):
         sources.targets([str(make(vault))], force=False)
+
+
+def test_a_source_reached_through_a_symlink_is_taken_once_at_the_first_place_given(vault, tmp_path):
+    link = tmp_path / "link"
+    link.symlink_to(vault, target_is_directory=True)
+    ts = sources.targets([str(vault / "a.md"), str(link / "a.md")], force=True)
+    assert [t.source for t in ts] == [vault / "a.md"]

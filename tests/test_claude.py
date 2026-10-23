@@ -201,3 +201,16 @@ def test_longest_silence_is_measured(fake, sandbox, system_prompt):
 def test_a_missing_binary_fails_the_worker_without_raising(sandbox, system_prompt):
     out = claude.Workers("/nonexistent/claude").run(sandbox, PROMPT, model="opus", effort="xhigh", system_prompt=system_prompt)
     assert out.kind == "crashed" and "claude" in out.reason
+
+
+def test_a_failing_progress_callback_does_not_orphan_the_worker(fake, sandbox, system_prompt):
+    fake.scenario({"delay": 0.2})
+
+    def explode(progress):
+        if progress.phase != claude.STARTING:
+            raise RuntimeError("기록을 쓸 수 없다")
+
+    with pytest.raises(RuntimeError):
+        claude.Workers(str(FAKE), grace=1).run(sandbox, PROMPT, model="opus", effort="xhigh", system_prompt=system_prompt,
+                                               on_progress=explode)
+    assert not alive(fake.calls()[0]["pid"])

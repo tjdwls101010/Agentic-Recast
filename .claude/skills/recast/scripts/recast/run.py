@@ -6,7 +6,7 @@ import shutil
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -58,15 +58,19 @@ def prompt(name: str, lines: int, instructions: str | None) -> str:
     return text
 
 
-def execute(paths_: list[str], options: Options, on_line: Callable[[str], None] | None = None) -> dict:
-    """원문을 고르고, 실행 기록을 열고, 파일마다 워커를 돌려 요약을 돌려준다. 잘못된 경로는 sources.UsageError, 환경 문제는 SetupError(둘 다 아무것도 시작하기 전)."""
+def execute(paths_: list[str], options: Options, on_line: Callable[[str], None] | None = None,
+            stop: threading.Event | None = None) -> dict:
+    """원문을 고르고, 실행 기록을 열고, 파일마다 워커를 돌려 요약을 돌려준다. 잘못된 경로는 sources.UsageError, 환경 문제는 SetupError(둘 다 아무것도 시작하기 전).
+
+    stop이 켜지면(언제든) 돌던 워커를 끝내고 아직 시작하지 않은 파일은 띄우지 않으며, 그래도 요약을 돌려준다.
+    """
     targets = sources.targets(paths_, options.force)
     binary = claude.binary()
     if not binary:
         raise SetupError("claude 실행 파일을 찾을 수 없다: Claude Code CLI를 설치하거나 PATH에 넣는다")
     if not paths.SYSTEM_PROMPT.is_file():
         raise SetupError(f"워커 지시문이 없다: {paths.SYSTEM_PROMPT}")
-    return _Batch(targets, options, binary, on_line or (lambda line: None)).go()
+    return _Batch(targets, options, binary, on_line or (lambda line: None), stop or threading.Event()).go()
 
 
 def _sha(data: bytes) -> str:
@@ -79,8 +83,10 @@ def _duration(seconds: float) -> str:
 
 
 class _Batch:
-    def __init__(self, targets: list[sources.Target], options: Options, binary: str, on_line: Callable[[str], None]):
-        self.targets, self.options, self.on_line = targets, options, on_line
+    def __init__(self, targets: list[sources.Target], options: Options, binary: str, on_line: Callable[[str], None],
+                 stop: threading.Event):
+        self.targets, self.options, self.on_line, self.stop = targets, options, on_line, stop
+        self.record_error = None
         self.workers = claude.Workers(binary)
         self.lock = threading.Lock()
         self.id = runs.new_id()
@@ -88,7 +94,11 @@ class _Batch:
         now = time.time()
         files = [{"source": str(t.source), "output": str(t.output), "status": "skipped" if t.skip else "queued",
                   **({"reason": t.skip} if t.skip else {})} for t in targets]
-        self.record = {"run": self.id, "pid": os.getpid(), "process_start": runs.process_identity(os.getpid()),
+        try:
+            identity = runs.process_identity(os.getpid())
+        except runs.Unavailable:
+            identity = None  # status는 하트비트로 판정한다
+        self.record = {"run": self.id, "pid": os.getpid(), "process_start": identity,
                        "state": "running", "started_at": now, "updated_at": now, "finished_at": None,
                        "options": {"model": options.model, "effort": options.effort, "jobs": options.jobs,
                                    "force": options.force, "instructions": options.instructions},
@@ -96,13 +106,21 @@ class _Batch:
 
     # ── 기록 ──────────────────────────────────────────────────────────
     def save(self, throttle: bool = False) -> None:
+        """기록을 쓴다. 쓰지 못해도 작업은 계속하고, 첫 오류를 요약의 warning으로 남긴다."""
         with self.lock:
             now = time.time()
             if throttle and now - self.last_save < SAVE_EVERY:
                 return
             self.last_save = now
             self.record["updated_at"] = now
-            runs.save(self.id, self.record)
+            try:
+                runs.save(self.id, self.record)
+            except OSError as e:
+                self.record_error = self.record_error or f"실행 기록을 쓸 수 없다({e.strerror or e}) — status로 진행을 볼 수 없다"
+
+    def heartbeat(self, done: threading.Event) -> None:
+        while not done.wait(runs.HEARTBEAT_SECONDS):
+            self.save()
 
     def progress(self, i: int, p: claude.Progress) -> None:
         with self.lock:
@@ -118,7 +136,7 @@ class _Batch:
             entry, now = self.record["files"][i], time.time()
             for key in ("phase", "phase_since", "written_chars", "last_signal_at"):
                 entry.pop(key, None)
-            entry.update(status=status, finished_at=now, seconds=round(now - entry["started_at"], 1),
+            entry.update(status=status, finished_at=now, seconds=round(now - entry.get("started_at", now), 1),
                          **{k: v for k, v in fields.items() if v not in (None, "")})
             line = self._line(entry)
         self.save()
@@ -138,30 +156,32 @@ class _Batch:
         for entry in self.record["files"]:
             if entry["status"] == "skipped":
                 self.on_line(self._line(entry))
-        todo = [i for i, t in enumerate(self.targets) if not t.skip]
+        done = threading.Event()
+        threading.Thread(target=self.heartbeat, args=(done,), daemon=True).start()
         pool = ThreadPoolExecutor(max_workers=self.options.jobs)
-        futures = [pool.submit(self.one, i) for i in todo]
-        interrupted = False
         try:
-            for f in as_completed(futures):
-                f.result()
-        except KeyboardInterrupt:
-            interrupted = True
-            self.workers.stop()
-            pool.shutdown(wait=True, cancel_futures=True)
-            with self.lock:
-                for entry in self.record["files"]:
-                    if entry["status"] == "queued":
-                        entry.update(status="interrupted", reason="시작하기 전에 멈췄다")
-        pool.shutdown(wait=True)
+            pending = {pool.submit(self.one, i) for i, t in enumerate(self.targets) if not t.skip}
+            stopping = False
+            while pending:
+                finished, pending = wait(pending, timeout=0.2)
+                for f in finished:
+                    f.result()
+                if self.stop.is_set() and not stopping:
+                    stopping = True
+                    self.workers.stop()  # 돌던 워커는 끝나고, 대기 중인 파일은 one()이 시작하지 않는다
+        finally:
+            pool.shutdown(wait=True)
+            done.set()
         with self.lock:
-            now = time.time()
-            self.record["state"] = "interrupted" if interrupted else "finished"
-            self.record["finished_at"] = now
+            files = self.record["files"]
+            self.record["state"] = "interrupted" if any(f["status"] == "interrupted" for f in files) else "finished"
+            self.record["finished_at"] = time.time()
         self.save()
         return self.summary()
 
     def one(self, i: int) -> None:
+        if self.stop.is_set():
+            return self.finish(i, "interrupted", reason="시작하기 전에 멈췄다")
         target, now = self.targets[i], time.time()
         with self.lock:
             self.record["files"][i].update(status="running", started_at=now, phase=claude.STARTING, phase_since=now,
@@ -228,5 +248,8 @@ class _Batch:
             next_step = "실패한 파일은 reason과 next를 본다 — 같은 명령을 다시 실행하면 끝난 파일은 건너뛰고 실패한 파일만 다시 한다"
         else:
             next_step = "끝났다 — 출력은 각 원문 옆의 Recast_ 파일이다"
-        return {"run": self.id, "state": state, "summary": {"total": len(files), **counts, "seconds": seconds},
-                "files": listed, "next": next_step}
+        result = {"run": self.id, "state": state, "summary": {"total": len(files), **counts, "seconds": seconds},
+                  "files": listed, "next": next_step}
+        if self.record_error:
+            result["warning"] = self.record_error
+        return result

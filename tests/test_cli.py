@@ -336,3 +336,42 @@ def test_a_reused_pid_does_not_make_a_dead_run_look_alive(env, vault, fake):
 def test_status_without_any_run_exits_2(env):
     p = cli(env, "status")
     assert p.returncode == 2 and "실행 기록" in p.stderr
+
+
+# ── 코드 검토(codex) 뒤 더한 것 ──────────────────────────────────────
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root는 권한을 무시한다")
+def test_an_unwritable_run_record_does_not_stop_the_work(env, vault, tmp_path):
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o555)
+    try:
+        p, out = run_json({**env, "RECAST_DATA_DIR": str(locked / "data")}, str(vault / "a.md"))
+    finally:
+        locked.chmod(0o755)
+    assert p.returncode == 0 and by_source(out)["a.md"]["status"] == "done"
+    assert "실행 기록" in out["warning"]
+    assert (vault / "Recast_a.md").exists()
+
+
+def test_status_without_an_id_reads_the_run_that_started_last(env, vault):
+    ids = [run_json(env, str(vault / "a.md"), "--force")[1]["run"] for _ in range(4)]
+    assert status_json(env)["run"] == ids[-1]
+
+
+def test_without_ps_a_fresh_record_is_running_and_a_stale_one_is_interrupted(env, vault, fake, tmp_path):
+    fake.scenario({"silent": 60})
+    proc = start(env, str(vault / "a.md"))
+    no_ps = {**env, "PATH": str(tmp_path / "no-ps")}
+    try:
+        wait_for(fake.calls)
+        record_path = wait_for(lambda: records(env))[0]
+        assert status_json(no_ps)["state"] == "running"
+        proc.kill()
+        proc.wait(timeout=10)
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record["updated_at"] -= 600  # 하트비트가 10분 멈춘 기록
+        record_path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+        assert status_json(no_ps)["state"] == "interrupted"
+    finally:
+        kill_workers(fake)

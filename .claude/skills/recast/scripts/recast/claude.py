@@ -175,6 +175,9 @@ class Workers:
             self._live.add(proc)
         try:
             return self._follow(proc, prompt, model, on_progress, stall_seconds, start)
+        except BaseException:  # 진행 콜백의 예외 등으로 빠져나가도 워커를 남기지 않는다
+            self._kill(proc)
+            raise
         finally:
             with self._lock:
                 self._live.discard(proc)

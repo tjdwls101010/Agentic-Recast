@@ -273,3 +273,57 @@ frontmatter: `name: recast` / `description`(직접 호출용으로 짧게 — �
 | 4 | 중간·검증 공백 | 거부된 Write의 `permission_denials[].tool_input`에 본문이 들어 있어, 직렬화하면 표식 테스트를 통과하면서 새어 나간다 | `tool_input`을 싣지 않고 도구 이름·경로만, 표식 테스트에 거부된 Write·오류 결과 추가 |
 
 남은 것(확인 불가로 남김): 정상 사고 중 이벤트 공백과 실제 이벤트 모양은 실제 헤드리스 실행 없이 확인할 수 없어 6·8단계에 둔다. 재시도나 반복 호출처럼 이벤트가 계속 오는 정체는 `STALL`의 탐지 대상이 아니다(성진이 고른 정책의 범위). 패키지 안 `system_prompt.md`는 구조 테스트·`uv run`과 충돌하지 않는다(codex 확인). 이 4건의 처리는 계획 수준의 수정이라 세 번째 검토 대신 구현의 테스트(seam ①·③)가 닫는다.
+
+# 구현 기록 (2026-10-23)
+
+## 단계 결과
+
+| 단계 | 결과 |
+|---|---|
+| 0 | 계획 승인 직후 `recast-skill-rebuild.md`로 옮김 |
+| 1 | `git init -b main`, 원격 연결, 첫 커밋 `f3cb14d` 푸시. `git check-ignore` 다섯 경로 모두 무시 |
+| 2 | 구조 테스트 빨강(트리 없음 7건) → 골격으로 초록 9건. `sys.path` 편집·system→feature import·밑줄 이름 접근을 일부러 넣어 셋 다 잡히는 것을 확인 |
+| 3 | 실제 claude로 정상·권한 거부 스트림을 먼저 받아(경로만 바꿔) 픽스처로 삼고, `claude.py` 테스트 27건 빨강→초록. 권한 거부 판정 제거·모델 판정 무력화·`killpg`→`kill` 변형을 테스트가 잡음 |
+| 4 | `sources`·`publish` 15건 빨강→초록. no-clobber를 `os.replace`로 바꾸기·옛 접두사 제외 제거·`Reconstruct_`를 완료로 보기 변형을 잡음 |
+| 5 | seam ① 33건. A 묶음은 빨강→초록, B~D는 구현과 함께 들어가 여섯 변형(원문 해시 비교 제거, 항상 force 게시, 글 상한 5000, 대기 파일 interrupted 표시 제거, 생존 항상 참, PID만으로 생존)으로 지키는지 확인. `uv run … --help`를 실제로 읽고, 인자 도움말이 접히지 않게 `RawTextHelpFormatter`로 바꿈 |
+| 6 | `RECAST_LIVE=1 uv run pytest -m live` 4건 통과(37초, 수정 뒤 다시 4건 통과). `modelUsage`에 보조 모델 없음, `maxOutputTokens` 128000, `note..md` 끝에서 끝까지 통과 |
+| 7 | 문서 초안 → codex 문서 검토 6건 반영 → 성진 전문 승인 |
+| 8 | 아래 E2E 표. 성진 출력 품질 승인. `claude -p "/recast .tmp/examples"`로 SKILL.md 흐름(스킬 로드 → `allowed-tools` 사전 승인 → CLI → 결과 전달, 권한 거부 0)도 확인 |
+| 9 | `claude plugin validate --strict` exit 0, `uv run pytest` 96 passed(라이브 4 제외), ruff 통과, codex 최종 검토 "없음" |
+
+### E2E (`uv run .claude/skills/recast/scripts/cli.py run .tmp/examples`, 기본 opus·xhigh, 병렬 3)
+
+| 원문 | 원문→출력 | 시간 | models | 최장 무신호 | worker_said |
+|---|---|---|---|---|---|
+| 📰Claude Opus 5.5 is built with that in mind..md | 8,198→3,564자 | 1분 39초 | claude-opus-5-5 | 1.7초 | 버린 대목 없음 |
+| 📰Why Are We Sprinting Off the A.I. Cliff?.md | 35,606→14,883자 | 5분 13초 | claude-opus-5-5 | 3.0초 | 버린 대목 없음 |
+| 📰Bill Gates A.I. ‘Makes Nuclear Weapons Look Like Nothing’.md | 78,633→25,762자 | 7분 18초 | claude-opus-5-5 | 1.7초 | 버린 대목 없음 |
+
+전체 438초, exit 0. 도중 `status`가 파일마다 단계·머문 시간·글자 수·마지막 신호를 보여 줬다. 최장 무신호가 3초로 7분 기준에 한참 못 미쳐 `STALL` 20분을 그대로 둔다.
+
+## 계획 대비 바꾼 것
+
+- **생존 판정:** 계획은 "하트비트가 신선하면 running, 멈췄으면 PID·시작 시각 확인"이었다. 구현은 PID·시작 시각을 먼저 보고, `ps`를 쓸 수 없거나 조회가 stderr와 함께 실패할 때만 하트비트(30초 갱신, 2분 기준)로 본다. 하트비트를 먼저 보면 강제 종료된 실행이 최대 2분 동안 running으로 보이기 때문이다.
+- **중단:** 신호 처리기가 `KeyboardInterrupt`를 던지지 않고 멈춤 이벤트만 켠다(codex 코드 1차 #1). 배치는 0.2초마다 이벤트를 보고 워커를 끝내며, 파일은 시작 전에 이벤트를 확인한다. 멈춤 요청을 받은 실행은 `interrupted`로 남는다.
+- **성공 시 `worker_said`:** 워커 프롬프트가 마지막 답을 "버린 대목" 한 줄로 하게 하고, 성공한 파일에도 `worker_said`를 싣는다(codex 문서 #3). 깨져서 버린 대목이 성공 결과에서 사라지지 않게 하려는 것이다.
+- **재시도 안내:** `--force`로 돈 실행 뒤의 `next`는 "실패하거나 중단된 원문만 경로로 주고 다시 실행"으로 안내한다(codex 문서 #1).
+- **단계 이름:** `시작`을 더했다(첫 이벤트 전 상태).
+- **출력 한도:** 실측에서 `CLAUDE_CODE_MAX_OUTPUT_TOKENS` 없이도 `modelUsage.maxOutputTokens`가 128000이었다. 문서에 숫자가 없어 명시는 그대로 둔다.
+- **픽스처:** 계획은 6단계에서 실제 모양을 받기로 했지만, 가짜가 실제와 다른 모양을 흉내 내지 않도록 3단계 시작 전에 받았다.
+- **커밋 이력:** `f0862ce`(코드 수정)에 문서 초안 `system_prompt.md`가 함께 들어갔다. 스쿼시 머지라 main에는 남지 않는다. `uv.lock`도 커밋한다.
+
+## 독립 검토 (codex, gpt-6.1-sol high, read-only)
+
+| 회차 | run | 결과와 처리 |
+|---|---|---|
+| 코드 1차 | `20261023-142154-code-review-cli-22e0` | 5건 모두 반영: 작업 제출 직후 신호에 대기 파일이 게시됨(높음) / 기록 저장 실패 시 워커 고아 / 같은 초의 id로 최근 실행 오판 / ps 불가 환경에서 생존 오판 / 심볼릭 링크로 같은 원문 두 번 처리 — 각각 재현 테스트를 먼저 쓰고 고침 |
+| 문서 | `20261023-142510-doc-review-413d` | 6건 모두 반영: `--force` 재시도 안내 / 이름 없는 화자 규칙이 결정보다 넓음 / 깨져서 버린 대목의 보고 / 실질 목록과 광고 제거의 범위 / CLI 기본값의 사본 / 500자 상한과 "그대로" 표현 |
+| 코드 2차 | `20261023-143111-code-review-cli-78bf` | 1차 5건 해소 확인, 새 3건 반영: 결과를 낸 뒤 멈춘 워커가 실패로 보고됨 / ps가 돌았지만 조회 실패 / 읽을 수 없는 과거 기록이 status를 막음 |
+| 최종 | `20261023-144511-code-review-cli-b9db` | 없음(평범한 사용 흐름 전체, 96 passed) |
+
+## 남은 것·한계
+
+- **충실도는 자동으로 검사하지 않는다**(설계). SKILL.md가 결과 전달에서 이 사실을 말한다. 워커가 스스로 확인한 결손만 `worker_said`로 온다.
+- **확인하지 못한 것:** 성진이 원문 안에 직접 쓴 `[!success] 요약` 같은 메모가 본문에 섞이는지(예시 원문에 없었다), 책 장(PDF 합자·각주·제사)에서의 출력, `rate_limit_event`의 `rejected` 모양(가짜에서만), Claude Code가 백그라운드 작업을 멈출 때 보내는 신호와의 연동(`/recast` 흐름은 `-p`로만 확인).
+- **Gates 출력**에 "클라인은 … 물었다"식 질문 중계가 일부 남았다(성진 승인). 되풀이되면 화자 절의 예시를 손볼 후보다.
+- **볼트**의 옛 `.claude/skills/Knowledge`와 `.knowledge/` 작업 폴더는 결정대로 그대로 두었다.

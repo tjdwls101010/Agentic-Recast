@@ -1,0 +1,18 @@
+.DS_Store
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.venv/
+
+# 원문 사본과 예시 재료 — 공개 레포에 올리지 않는다
+.tmp/
+
+# 세션 기록 심볼릭 링크
+.claude/histories
+
+# 스킬 실행 기록(runs/)
+.claude/skills/recast/data/
+
+# 도구 실행 기록
+.ultra-search/
+.codex-runs/

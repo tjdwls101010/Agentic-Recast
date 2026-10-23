@@ -1,0 +1,22 @@
+# 개발 전용 — 테스트와 린트의 환경만 정의한다. 스킬 진입점 cli.py는 PEP 723 인라인 메타데이터로 돌고, 이 프로젝트를 쓰지 않는다.
+[project]
+name = "agentic-recast-dev"
+version = "0"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".claude/skills/recast/scripts", "tests"]
+addopts = "-m 'not live'"
+markers = ["live: 실제 claude를 부른다(RECAST_LIVE=1일 때만 돈다)"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

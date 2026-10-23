@@ -20,6 +20,7 @@
   modify        실행 도중 이 절대 경로 파일 끝에 글을 덧붙인다
   create        실행 도중 이 절대 경로에 파일을 만든다
   ignore_term   SIGTERM을 무시한다
+  linger        result 이벤트를 낸 뒤 이만큼(초) 더 머물다 끝난다
 """
 
 import json
@@ -148,6 +149,8 @@ def main():
     if not b.get("no_result"):
         emit({"type": "result", "subtype": "success", "is_error": bool(b.get("is_error")), "result": result_text,
               "permission_denials": denials, "modelUsage": {m: {"outputTokens": 10, "maxOutputTokens": 128000} for m in models}})
+    if b.get("linger"):
+        time.sleep(float(b["linger"]))
     return int(b.get("exit", 0))
 
 

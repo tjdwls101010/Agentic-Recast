@@ -246,8 +246,8 @@ class Workers:
         def fail(kind, reason):
             return Outcome(False, kind, reason, models, final, longest, seconds)
 
-        if ended == "stopped" or (self._stopping.is_set() and reader.result is None):
-            return fail("stopped", "사용자가 실행을 멈췄다")
+        if ended == "stopped" or (self._stopping.is_set() and (returncode != 0 or reader.result is None)):
+            return fail("stopped", "사용자가 실행을 멈췄다")  # 결과를 낸 뒤라도 우리가 끝낸 워커의 출력은 게시하지 않는다
         if ended == "stalled":
             return fail("stalled", f"워커에게서 {stall_seconds / 60:g}분 동안 신호가 없어 멈춘 것으로 보고 끝냈다")
         if returncode != 0:

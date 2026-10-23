@@ -175,7 +175,8 @@ class _Batch:
             done.set()
         with self.lock:
             files = self.record["files"]
-            self.record["state"] = "interrupted" if any(f["status"] == "interrupted" for f in files) else "finished"
+            interrupted = self.stop.is_set() or any(f["status"] == "interrupted" for f in files)
+            self.record["state"] = "interrupted" if interrupted else "finished"
             self.record["finished_at"] = time.time()
         self.save()
         return self.summary()

@@ -40,9 +40,10 @@ def load(run_id: str) -> dict | None:
     if not _ID.fullmatch(run_id):
         return None
     try:
-        return json.loads((paths.runs_dir() / f"{run_id}.json").read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
+        record = json.loads((paths.runs_dir() / f"{run_id}.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
+    return record if isinstance(record, dict) else None
 
 
 def latest() -> str | None:
@@ -62,6 +63,8 @@ def process_identity(pid: int) -> str | None:
         out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise Unavailable(str(e)) from e
+    if out.returncode != 0 and out.stderr.strip():  # 프로세스가 없으면 ps는 아무 말 없이 1로 끝난다
+        raise Unavailable(out.stderr.strip())
     return out.stdout.strip() or None
 
 

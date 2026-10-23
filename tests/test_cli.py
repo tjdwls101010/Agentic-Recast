@@ -392,3 +392,47 @@ def test_retry_advice_after_a_force_run_does_not_promise_to_skip_finished_files(
     assert "건너뛰" not in by_source(out)["b.md"]["next"]
     _, out = run_json(env, str(vault / "b.md"))
     assert "건너뛰" in out["next"]
+
+
+def test_a_stop_after_the_worker_reported_but_before_it_exited_is_an_interruption(env, vault, fake):
+    fake.scenario({"linger": 30})
+    proc = start(env, str(vault / "a.md"))
+    wait_for(fake.calls)
+    wait_for(lambda: Path(fake.calls()[0]["cwd"], "output.md").exists())
+    proc.send_signal(signal.SIGTERM)
+    out, _ = proc.communicate(timeout=30)
+    result = json.loads(out)
+    assert proc.returncode == 130 and result["state"] == "interrupted"
+    assert by_source(result)["a.md"]["status"] == "interrupted"
+    assert not (vault / "Recast_a.md").exists()
+
+
+def test_a_ps_that_runs_but_cannot_look_up_falls_back_to_the_heartbeat(env, vault, fake, tmp_path):
+    bin_dir = tmp_path / "broken-ps"
+    bin_dir.mkdir()
+    ps = bin_dir / "ps"
+    ps.write_text("#!/bin/sh\necho 'ps: permission denied' >&2\nexit 1\n")
+    ps.chmod(0o755)
+    fake.scenario({"silent": 60})
+    proc = start(env, str(vault / "a.md"))
+    try:
+        wait_for(fake.calls)
+        wait_for(lambda: records(env))
+        assert status_json({**env, "PATH": str(bin_dir)})["state"] == "running"
+    finally:
+        proc.send_signal(signal.SIGTERM)
+        proc.communicate(timeout=30)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root는 권한을 무시한다")
+def test_an_unreadable_old_record_does_not_hide_the_latest_run(env, vault):
+    _, out = run_json(env, str(vault / "a.md"))
+    folder = Path(env["RECAST_DATA_DIR"]) / "runs"
+    (folder / "20000101-000000-0001.json").write_bytes(b"\xff\xfe not utf-8")
+    locked = folder / "20000101-000000-0002.json"
+    locked.write_text("{}", encoding="utf-8")
+    locked.chmod(0o000)
+    try:
+        assert status_json(env)["run"] == out["run"]
+    finally:
+        locked.chmod(0o644)

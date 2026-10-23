@@ -46,8 +46,9 @@ class Outcome:
 
 
 def binary() -> str | None:
-    """워커로 띄울 claude 실행 파일. RECAST_CLAUDE_BIN이 있으면 그것(테스트용), 없으면 PATH의 claude."""
-    return os.environ.get("RECAST_CLAUDE_BIN") or shutil.which("claude")
+    """워커로 띄울 claude 실행 파일. RECAST_CLAUDE_BIN이 있으면 그것(테스트용), 없으면 PATH의 claude. 실행할 수 없으면 None."""
+    found = os.environ.get("RECAST_CLAUDE_BIN") or shutil.which("claude")
+    return found if found and os.path.isfile(found) and os.access(found, os.X_OK) else None
 
 
 def valid_model(name: str) -> bool:

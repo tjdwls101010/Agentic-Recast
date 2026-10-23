@@ -43,16 +43,21 @@ def alive(pid):
     return True
 
 
-def test_binary_prefers_the_env_override_then_path(tmp_path, monkeypatch):
-    monkeypatch.setenv("RECAST_CLAUDE_BIN", "/opt/fake/claude")
-    assert claude.binary() == "/opt/fake/claude"
-    monkeypatch.delenv("RECAST_CLAUDE_BIN")
+def test_binary_prefers_the_env_override_then_path_and_needs_an_executable(tmp_path, monkeypatch):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     exe = bin_dir / "claude"
     exe.write_text("#!/bin/sh\n")
     exe.chmod(0o755)
+    override = tmp_path / "override-claude"
+    override.write_text("#!/bin/sh\n")
+    override.chmod(0o755)
     monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setenv("RECAST_CLAUDE_BIN", str(override))
+    assert claude.binary() == str(override)
+    monkeypatch.setenv("RECAST_CLAUDE_BIN", str(tmp_path / "missing-claude"))
+    assert claude.binary() is None
+    monkeypatch.delenv("RECAST_CLAUDE_BIN")
     assert claude.binary() == str(exe)
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
     assert claude.binary() is None
